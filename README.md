@@ -1,9 +1,9 @@
-<h2 align="center"> <a href="https://arxiv.org/abs/2501.13420v2">[ICCV 2025 Highlight] LVFace: Progressive Cluster Optimization for Large Vision Models in Face Recognition</a></h2>
+<h2 align="center"> <a href="https://arxiv.org/abs/2501.13420">[ICCV 2025 Highlight] LVFace: Progressive Cluster Optimization for Large Vision Models in Face Recognition</a></h2>
 
 <h5 align="center">If you like LVFace, please give us a star ⭐ on GitHub for the latest update. </h5>
 
 <h5 align="center">
-<a href='https://arxiv.org/abs/2501.13420v2'><img src='https://img.shields.io/badge/Arxiv-Paper-Red'></a>
+<a href='https://arxiv.org/abs/2501.13420'><img src='https://img.shields.io/badge/Arxiv-Paper-Red'></a>
 <a href="https://huggingface.co/bytedance-research/LVFace">
     <img 
         src="https://img.shields.io/badge/HuggingFace-Model-yellow?logo=huggingface&logoColor=yellow" 
@@ -42,7 +42,7 @@ This is the official PyTorch implementation for the inference of LVFace. Drawing
 - 🔥🔥🔥 We have released the training weights of LVFace. Please click [here](https://huggingface.co/bytedance-research/LVFace/tree/main) to download it. (August, 2025 UTC)
 - 🎉🎉🎉 LVFace has been recommended as **ICCV Highlight**. (July, 2025 UTC)
 - 🎉🎉🎉 LVFace is accepted by **ICCV 2025**. (July, 2025 UTC)
-- 🔥🔥🔥 We have updated the arXiv report of LVFace. Please click [here](https://arxiv.org/abs/2501.13420v2) to view it. (March, 2025 UTC)
+- 🔥🔥🔥 We have updated the arXiv report of LVFace. Please click [here](https://arxiv.org/abs/2501.13420) to view it. (March, 2025 UTC)
 - 🎉🎉🎉 LVFace secured **1st place** in the ICCV 2021 Masked Face Recognition (MFR)-Ongoing Challenge (academic track). (December, 2024 UTC)
 <div align="center">
 <img src="docs/MFR.png" alt="LVFace 示意图" width="30%">
@@ -163,6 +163,6 @@ If you find this work useful, please cite our paper and give us a star ⭐:
 
 
 ## Acknowledgments  
-We sincerely thank **Professor Deng Jiankang** for his valuable guidance and insights throughout the research. 
+We sincerely thank **Professor Jiankang Deng** for his valuable guidance and insights throughout the research. 
 
 We also appreciate the [InsightFace](https://github.com/deepinsight/insightface/tree/master/recognition/arcface_torch) for their excellent and research support.  
