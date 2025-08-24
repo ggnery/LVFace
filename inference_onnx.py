@@ -147,12 +147,12 @@ class LVFaceONNXInferencer:
 
 if __name__ == "__main__":
     # Example usage
-    model_path = "./LVFace-T_Glint360K.onnx"  # Update with your model path
+    model_path = "./models/LVFace-L_Glint360K.onnx"  # Update with your model path
     inferencer = LVFaceONNXInferencer(model_path, use_gpu=True)
     
     # Example 1: Inference from local image
     try:
-        img_path = "1.jpg"  # Update with your image path
+        img_path = "nicolas_cage.jpg"  # Update with your image path
         embedding = inferencer.infer_from_image(img_path)
         print(f"Extracted feature shape: {embedding.shape}")
     except Exception as e:
@@ -160,7 +160,7 @@ if __name__ == "__main__":
     
     # Example 2: Inference from URL
     try:
-        img_url = "url"
+        img_url = "https://i.dailymail.co.uk/i/pix/2013/09/03/article-2409519-1B97693E000005DC-872_306x423.jpg"
         embedding_url = inferencer.infer_from_url(img_url)
         print(f"Extracted feature from URL shape: {embedding_url.shape}")
     except Exception as e:

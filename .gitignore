@@ -2,3 +2,5 @@ work_dirs
 __pycache__
 data
 tmp
+models/
+images/

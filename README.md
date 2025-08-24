@@ -95,6 +95,8 @@ Pretrained model weights for inference are available below in both ONNX and PyTo
    Then install all required dependencies using the provided `requirements.txt`:
    ```bash
    # Install dependencies
+   conda create lvface python=3.10
+   conda activate lvface
    pip install -r requirements.txt
    ```
 

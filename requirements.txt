@@ -2,6 +2,6 @@ onnxruntime-gpu==1.19.2
 torch --index-url https://download.pytorch.org/whl/cu124
 torchvision --index-url https://download.pytorch.org/whl/cu124
 torchaudio --index-url https://download.pytorch.org/whl/cu124
-scikit-image
-insightface
+scikit-image==0.24.0
+insightface==0.7.3
 numpy==1.23
