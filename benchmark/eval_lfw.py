@@ -16,6 +16,7 @@ import prettytable
 # Add parent directory to path to import onnx_helper
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from onnx_helper import ArcFaceORT
+from inference_onnx import LVFaceONNXInferencer
 
 # Standard face alignment landmarks for 112x112 images
 SRC = np.array([
@@ -26,7 +27,6 @@ SRC = np.array([
     [62.7299, 92.2041]
 ], dtype=np.float32)
 SRC[:, 0] += 8.0
-
 
 class LFWDataset(Dataset):
     """LFW Dataset for face verification evaluation"""
@@ -137,31 +137,8 @@ class LFWDataset(Dataset):
         img1_path, img2_path = self.pairs[idx]
         label = self.labels[idx]
         
-        # Load and preprocess images
-        img1 = self._load_and_preprocess_image(img1_path)
-        img2 = self._load_and_preprocess_image(img2_path)
-        
-        return img1, img2, label
+        return img1_path, img2_path, label
     
-    def _load_and_preprocess_image(self, img_path):
-        """Load and preprocess a single image"""
-        # Load image
-        img = cv2.imread(img_path)
-        if img is None:
-            raise ValueError(f"Could not load image: {img_path}")
-        
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        
-        # Resize to target size
-        img = cv2.resize(img, self.image_size)
-        
-        # Convert to torch tensor
-        img = img.astype(np.float32)
-        
-        # Convert to CHW format
-        img = np.transpose(img, (2, 0, 1))
-        
-        return torch.from_numpy(img)
 
 
 class LFWEvaluator:
@@ -173,13 +150,10 @@ class LFWEvaluator:
             model_path: Path to ONNX model directory
             use_flip: Whether to use flip test augmentation
         """
-        self.model = ArcFaceORT(model_path)
-        self.model.check()
+        self.model = LVFaceONNXInferencer(model_path, use_gpu=True)
         self.use_flip = use_flip
         
         print(f"Model loaded: {model_path}")
-        print(f"Feature dimension: {self.model.feat_dim}")
-        print(f"Input size: {self.model.image_size}")
     
     def extract_features(self, dataloader):
         """Extract features from all image pairs"""
@@ -188,13 +162,15 @@ class LFWEvaluator:
         all_labels = []
         
         print("Extracting features...")
-        for batch_idx, (img1_batch, img2_batch, labels) in enumerate(dataloader):
-            # Process image 1
-            feat1 = self._extract_batch_features(img1_batch)
-            feat2 = self._extract_batch_features(img2_batch)
+        for batch_idx, (img1_paths, img2_paths, labels) in enumerate(dataloader):
+            # Process each pair in the batch
+            for i in range(len(img1_paths)):
+                feat1 = self.model.infer_from_image(img1_paths[i])
+                feat2 = self.model.infer_from_image(img2_paths[i])
+                
+                all_features1.append(feat1)
+                all_features2.append(feat2)
             
-            all_features1.append(feat1)
-            all_features2.append(feat2)
             all_labels.extend(labels.numpy())
             
             if batch_idx % 100 == 0:
@@ -208,46 +184,15 @@ class LFWEvaluator:
         print(f"Extracted features for {len(labels)} pairs")
         return features1, features2, labels
     
-    def _extract_batch_features(self, img_batch):
-        """Extract features from a batch of images"""
-        batch_size = img_batch.shape[0]
-        
-        # Convert to numpy and adjust format for ONNX model
-        imgs = img_batch.numpy()
-        
-        # Apply model normalization
-        imgs = (imgs - self.model.input_mean) / self.model.input_std
-        
-        features = []
-        
-        for i in range(batch_size):
-            img = imgs[i:i+1]  # Keep batch dimension
-            
-            if self.use_flip:
-                # Original image
-                feat1 = self.model.session.run(self.model.output_names, {self.model.input_name: img})[0]
-                
-                # Flipped image
-                img_flipped = img[:, :, :, ::-1].copy()  # Flip horizontally
-                feat2 = self.model.session.run(self.model.output_names, {self.model.input_name: img_flipped})[0]
-                
-                # Average features
-                feat = (feat1 + feat2) / 2.0
-            else:
-                feat = self.model.session.run(self.model.output_names, {self.model.input_name: img})[0]
-            
-            features.append(feat[0])  # Remove batch dimension
-        
-        return np.array(features)
     
     def evaluate(self, features1, features2, labels):
         """Evaluate face verification performance"""
-        # Normalize features
-        features1 = normalize(features1, axis=1)
-        features2 = normalize(features2, axis=1)
-        
-        # Compute cosine similarity
-        similarities = np.sum(features1 * features2, axis=1)
+
+        similarities = []
+        for feat1, feat2 in zip(features1, features2):
+            sim = self.model.calculate_similarity(feat1, feat2)
+            similarities.append(sim)
+        similarities = np.array(similarities)
         
         # Compute ROC curve
         fpr, tpr, thresholds = roc_curve(labels, similarities)
