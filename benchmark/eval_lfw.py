@@ -1,281 +1,427 @@
-import argparse
-import os
-import sys
-import timeit
+#!/usr/bin/env python3
+"""
+Simplified LFW Benchmark Script for LVFace ONNX Model
+Uses the LVFaceONNXInferencer class for clean and efficient evaluation
+"""
+
 import numpy as np
 import pandas as pd
-from torch.utils.data import DataLoader, Dataset
-from sklearn.metrics import roc_curve, auc
-from sklearn.preprocessing import normalize
-import prettytable
+import matplotlib.pyplot as plt
+import seaborn as sns
+from PIL import Image
+from pathlib import Path
+import argparse
+from sklearn.metrics import roc_curve, auc, accuracy_score, confusion_matrix
+from tqdm import tqdm
+import warnings
+warnings.filterwarnings('ignore')
 
-# Add parent directory to path to import onnx_helper
+import sys
+import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from onnx_helper import ArcFaceORT
 from inference_onnx import LVFaceONNXInferencer
 
 
-class LFWDataset(Dataset):
-    """LFW Dataset for face verification evaluation"""
+class LVFaceONNXLFWBenchmark:
+    """LFW benchmark evaluation for LVFace ONNX model using the inference class."""
     
-    def __init__(self, data_root, pairs_file, image_size=(112, 112)):
+    def __init__(self, model_path: str, lfw_data_path: str, use_gpu: bool = True):
         """
+        Initialize LFW benchmark.
+        
         Args:
-            data_root: Path to lfw-deepfunneled directory
-            pairs_file: Path to pairs CSV file
-            image_size: Target image size for face recognition model
+            model_path: Path to LVFace ONNX model file
+            lfw_data_path: Path to LFW dataset directory
+            use_gpu: Whether to use GPU acceleration
         """
-        self.data_root = data_root
-        self.image_size = image_size
+        self.lfw_data_path = Path(lfw_data_path)
+        self.image_dir = self.lfw_data_path / 'lfw-deepfunneled' / 'lfw-deepfunneled'
         
-        # Load pairs from CSV
-        self.pairs_df = pd.read_csv(pairs_file)
-        self.pairs = []
-        self.labels = []
+        # Initialize LVFace ONNX inferencer
+        print(f"Loading LVFace ONNX model from {model_path}")
+        self.inferencer = LVFaceONNXInferencer(model_path, use_gpu=use_gpu)
         
-        # Process pairs - the CSV contains both same-person and different-person pairs
-        for _, row in self.pairs_df.iterrows():
-            # Check if this is a same-person pair or different-person pair
-            # Same person: name,imagenum1,imagenum2,
-            # Different person: name1,imagenum1,name2,imagenum2
+        print(f"LFW image directory: {self.image_dir}")
+        print(f"Using GPU: {use_gpu}")
+        
+    def get_image_path(self, person_name: str, image_num: int) -> Path:
+        """
+        Get path to LFW image.
+        
+        Args:
+            person_name: Name of the person
+            image_num: Image number for the person
             
-            if len(row) >= 4 and pd.notna(row.iloc[3]) and str(row.iloc[3]).strip() != '':
-                # Different person pair (4 columns)
-                name1 = row.iloc[0]
-                img1_num = int(row.iloc[1])
-                name2 = row.iloc[2]
-                img2_num = int(row.iloc[3])
-                
-                img1_path = os.path.join(data_root, name1, f"{name1}_{img1_num:04d}.jpg")
-                img2_path = os.path.join(data_root, name2, f"{name2}_{img2_num:04d}.jpg")
-                
-                if os.path.exists(img1_path) and os.path.exists(img2_path):
-                    self.pairs.append((img1_path, img2_path))
-                    self.labels.append(0)  # Different person
+        Returns:
+            Path to the image file
+        """
+        image_filename = f"{person_name}_{image_num:04d}.jpg"
+        return self.image_dir / person_name / image_filename
+    
+    def load_lfw_pairs(self) -> tuple:
+        """
+        Load LFW pairs from CSV file.
+        
+        Returns:
+            Tuple of (pairs_data, labels) where:
+            - pairs_data: List of tuples (person1, img1, person2, img2)
+            - labels: List of labels (1 for same person, 0 for different)
+        """
+        pairs_file = self.lfw_data_path / 'pairs.csv'
+        
+        if not pairs_file.exists():
+            # Try alternative locations
+            pairs_file = self.lfw_data_path / 'pairs.txt'
+            if not pairs_file.exists():
+                raise FileNotFoundError(f"Pairs file not found. Expected at: {self.lfw_data_path / 'pairs.csv'}")
+        
+        pairs_data = []
+        labels = []
+        
+        print(f"Loading LFW pairs from {pairs_file}...")
+        
+        with open(pairs_file, 'r') as f:
+            lines = f.readlines()
+            
+        # Skip header if it exists
+        start_idx = 1 if 'person' in lines[0].lower() or 'name' in lines[0].lower() else 0
+            
+        for line in tqdm(lines[start_idx:], desc="Processing pairs"):
+            line = line.strip()
+            if not line:
+                continue
+            
+            # Handle both comma and tab/space separated formats
+            if ',' in line:
+                parts = [part.strip() for part in line.split(',') if part.strip()]
             else:
-                # Same person pair (3 columns + empty 4th)
-                name = row.iloc[0]
-                img1_num = int(row.iloc[1])
-                img2_num = int(row.iloc[2])
+                parts = [part.strip() for part in line.split() if part.strip()]
+            
+            if len(parts) == 3:
+                # Positive pair: same person, different images
+                # Format: name, img1_num, img2_num
+                person1 = parts[0]
+                img1_num = int(parts[1])
+                person2 = parts[0]  # Same person
+                img2_num = int(parts[2])
                 
-                img1_path = os.path.join(data_root, name, f"{name}_{img1_num:04d}.jpg")
-                img2_path = os.path.join(data_root, name, f"{name}_{img2_num:04d}.jpg")
+                pairs_data.append((person1, img1_num, person2, img2_num))
+                labels.append(1)  # Same person
                 
-                if os.path.exists(img1_path) and os.path.exists(img2_path):
-                    self.pairs.append((img1_path, img2_path))
-                    self.labels.append(1)  # Same person
+            elif len(parts) == 4:
+                # Negative pair: different people
+                # Format: person1_name, img1_num, person2_name, img2_num
+                person1 = parts[0]
+                img1_num = int(parts[1])
+                person2 = parts[2]
+                img2_num = int(parts[3])
+                
+                pairs_data.append((person1, img1_num, person2, img2_num))
+                labels.append(0)  # Different people
+            else:
+                print(f"Skipping malformed line: {line}")
+                continue
         
-                       
-        print(f"Loaded {len(self.pairs)} pairs ({sum(self.labels)} positive, {len(self.labels) - sum(self.labels)} negative)")
+        print(f"Loaded {len(pairs_data)} pairs ({sum(labels)} positive, {len(labels) - sum(labels)} negative)")
+        return pairs_data, labels
     
-    def __len__(self):
-        return len(self.pairs)
-    
-    def __getitem__(self, idx):
-        img1_path, img2_path = self.pairs[idx]
-        label = self.labels[idx]
-        
-        return img1_path, img2_path, label
-    
-
-
-class LFWEvaluator:
-    """LFW Face Verification Evaluator"""
-    
-    def __init__(self, model_path):
+    def evaluate_pairs(self, pairs_data: list, labels: list) -> tuple:
         """
+        Evaluate model on LFW pairs.
+        
         Args:
-            model_path: Path to ONNX model directory
+            pairs_data: List of image pairs
+            labels: Ground truth labels
+            
+        Returns:
+            Tuple of (similarities, labels, skipped_pairs)
         """
-        self.model = LVFaceONNXInferencer(model_path, use_gpu=True)
-        
-        print(f"Model loaded: {model_path}")
-    
-    def extract_features(self, dataloader):
-        """Extract features from all image pairs"""
-        all_features1 = []
-        all_features2 = []
-        all_labels = []
-        
-        print("Extracting features...")
-        for batch_idx, (img1_paths, img2_paths, labels) in enumerate(dataloader):
-            # Process each pair in the batch
-            for i in range(len(img1_paths)):
-                feat1 = self.model.infer_from_image(img1_paths[i])
-                feat2 = self.model.infer_from_image(img2_paths[i])
-                
-                all_features1.append(feat1)
-                all_features2.append(feat2)
-            
-            all_labels.extend(labels.numpy())
-            
-            if batch_idx % 100 == 0:
-                print(f"Processed {batch_idx * dataloader.batch_size} pairs")
-        
-        # Concatenate all features
-        features1 = np.vstack(all_features1)
-        features2 = np.vstack(all_features2)
-        labels = np.array(all_labels)
-        
-        print(f"Extracted features for {len(labels)} pairs")
-        return features1, features2, labels
-    
-    
-    def evaluate(self, features1, features2, labels):
-        """Evaluate face verification performance"""
-
         similarities = []
-        for feat1, feat2 in zip(features1, features2):
-            sim = self.model.calculate_similarity(feat1, feat2)
-            similarities.append(sim)
-        similarities = np.array(similarities)
+        valid_labels = []
+        skipped_pairs = 0
         
+        print("Computing embeddings and similarities...")
+        for i, (person1, img1, person2, img2) in enumerate(tqdm(pairs_data)):
+            try:
+                # Get image paths
+                image1_path = self.get_image_path(person1, img1)
+                image2_path = self.get_image_path(person2, img2)
+                
+                # Check if images exist
+                if not image1_path.exists():
+                    raise FileNotFoundError(f"Image 1 not found: {image1_path}")
+                if not image2_path.exists():
+                    raise FileNotFoundError(f"Image 2 not found: {image2_path}")
+                
+                # Get embeddings using the inferencer
+                emb1 = self.inferencer.infer_from_image(str(image1_path))
+                emb2 = self.inferencer.infer_from_image(str(image2_path))
+                
+                # Compute similarity using the inferencer's method
+                similarity = self.inferencer.calculate_similarity(emb1, emb2)
+                similarities.append(similarity)
+                valid_labels.append(labels[i])
+                
+            except (FileNotFoundError, Exception) as e:
+                print(f"Skipping pair {i+1}: {e}")
+                skipped_pairs += 1
+                continue
+        
+        print(f"Processed {len(similarities)} pairs, skipped {skipped_pairs} pairs")
+        return np.array(similarities), np.array(valid_labels), skipped_pairs
+    
+    def compute_metrics(self, similarities: np.ndarray, labels: np.ndarray) -> dict:
+        """
+        Compute evaluation metrics.
+        
+        Args:
+            similarities: Array of similarity scores
+            labels: Array of ground truth labels
+            
+        Returns:
+            Dictionary of metrics
+        """
         # Compute ROC curve
         fpr, tpr, thresholds = roc_curve(labels, similarities)
-        auc_score = auc(fpr, tpr)
+        roc_auc = auc(fpr, tpr)
         
-        # Find best threshold (equal error rate)
-        eer_threshold = thresholds[np.argmin(np.abs(tpr - (1 - fpr)))]
-        eer = fpr[np.argmin(np.abs(tpr - (1 - fpr)))]
+        # Find optimal threshold (Youden's J statistic)
+        optimal_idx = np.argmax(tpr - fpr)
+        optimal_threshold = thresholds[optimal_idx]
         
-        # Compute accuracy at best threshold
-        predictions = similarities > eer_threshold
-        accuracy = np.mean(predictions == labels)
+        # Compute accuracy at optimal threshold
+        predictions = (similarities >= optimal_threshold).astype(int)
+        accuracy = accuracy_score(labels, predictions)
         
-        # Compute TAR (True Accept Rate) at specific FAR (False Accept Rate) levels
-        far_levels = [1e-4, 1e-3, 1e-2, 1e-1]
-        tar_at_far = []
+        # Compute true positive rate and false positive rate at optimal threshold
+        optimal_tpr = tpr[optimal_idx]
+        optimal_fpr = fpr[optimal_idx]
         
-        for far in far_levels:
-            # Find threshold that gives approximately this FAR
-            if np.any(fpr <= far):
-                threshold_idx = np.where(fpr <= far)[0][-1]
-                tar = tpr[threshold_idx]
-            else:
-                tar = 0.0
-            tar_at_far.append(tar)
+        # Additional metrics
+        from sklearn.metrics import precision_score, recall_score, f1_score
+        precision = precision_score(labels, predictions)
+        recall = recall_score(labels, predictions)
+        f1 = f1_score(labels, predictions)
         
-        results = {
-            'auc': auc_score,
-            'eer': eer,
+        metrics = {
+            'roc_auc': roc_auc,
             'accuracy': accuracy,
-            'best_threshold': eer_threshold,
-            'tar_at_far': dict(zip(far_levels, tar_at_far))
+            'precision': precision,
+            'recall': recall,
+            'f1_score': f1,
+            'optimal_threshold': optimal_threshold,
+            'optimal_tpr': optimal_tpr,
+            'optimal_fpr': optimal_fpr,
+            'fpr': fpr,
+            'tpr': tpr,
+            'thresholds': thresholds
         }
         
-        return results, similarities, labels
+        return metrics
     
-    def print_results(self, results):
-        """Print evaluation results in a formatted table"""
-        print("\n" + "="*60)
-        print("LFW Face Verification Results")
-        print("="*60)
+    def plot_results(self, metrics: dict, similarities: np.ndarray, labels: np.ndarray, save_path: str = None):
+        """
+        Plot comprehensive evaluation results.
         
-        # Main metrics
-        table = prettytable.PrettyTable(['Metric', 'Value'])
-        table.add_row(['AUC', f'{results["auc"]:.4f}'])
-        table.add_row(['EER', f'{results["eer"]:.4f}'])
-        table.add_row(['Accuracy', f'{results["accuracy"]:.4f}'])
-        table.add_row(['Best Threshold', f'{results["best_threshold"]:.4f}'])
+        Args:
+            metrics: Computed metrics dictionary
+            similarities: Array of similarity scores
+            labels: Array of ground truth labels
+            save_path: Path to save plots (optional)
+        """
+        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 12))
         
-        print(table)
+        # ROC Curve
+        ax1.plot(metrics['fpr'], metrics['tpr'], 'b-', linewidth=2,
+                label=f'LVFace (AUC = {metrics["roc_auc"]:.4f})')
+        ax1.plot([0, 1], [0, 1], 'r--', linewidth=1, label='Random Classifier')
+        ax1.plot(metrics['optimal_fpr'], metrics['optimal_tpr'], 'ro', markersize=8,
+                label=f'Optimal Point (t = {metrics["optimal_threshold"]:.3f})')
+        ax1.set_xlabel('False Positive Rate')
+        ax1.set_ylabel('True Positive Rate')
+        ax1.set_title('ROC Curve - LVFace on LFW Dataset')
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
         
-        # TAR at FAR levels
-        print(f"\nTAR (True Accept Rate) at various FAR (False Accept Rate) levels:")
-        tar_table = prettytable.PrettyTable(['FAR', 'TAR'])
-        for far, tar in results['tar_at_far'].items():
-            tar_table.add_row([f'{far:.0e}', f'{tar:.4f}'])
+        # Similarity Distribution
+        pos_similarities = similarities[labels == 1]
+        neg_similarities = similarities[labels == 0]
         
-        print(tar_table)
-
-
-def main(args):   
-    start_time = timeit.default_timer()
+        ax2.hist(neg_similarities, bins=50, alpha=0.7, label=f'Different People (n={len(neg_similarities)})', 
+                color='red', density=True)
+        ax2.hist(pos_similarities, bins=50, alpha=0.7, label=f'Same Person (n={len(pos_similarities)})', 
+                color='blue', density=True)
+        ax2.axvline(metrics['optimal_threshold'], color='green', linestyle='--', linewidth=2,
+                   label=f'Optimal Threshold ({metrics["optimal_threshold"]:.3f})')
+        ax2.set_xlabel('Cosine Similarity')
+        ax2.set_ylabel('Density')
+        ax2.set_title('Similarity Score Distribution')
+        ax2.legend()
+        ax2.grid(True, alpha=0.3)
+        
+        # Accuracy vs Threshold
+        accuracies = []
+        threshold_range = np.linspace(similarities.min(), similarities.max(), 100)
+        for thresh in threshold_range:
+            preds = (similarities >= thresh).astype(int)
+            acc = accuracy_score(labels, preds)
+            accuracies.append(acc)
+        
+        ax3.plot(threshold_range, accuracies, 'g-', linewidth=2)
+        ax3.axvline(metrics['optimal_threshold'], color='red', linestyle='--', linewidth=2,
+                   label=f'Optimal Threshold')
+        ax3.axhline(metrics['accuracy'], color='red', linestyle='--', linewidth=2,
+                   label=f'Max Accuracy ({metrics["accuracy"]:.4f})')
+        ax3.set_xlabel('Threshold')
+        ax3.set_ylabel('Accuracy')
+        ax3.set_title('Accuracy vs Threshold')
+        ax3.legend()
+        ax3.grid(True, alpha=0.3)
+        
+        # Confusion Matrix
+        predictions = (similarities >= metrics['optimal_threshold']).astype(int)
+        cm = confusion_matrix(labels, predictions)
+        
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', ax=ax4,
+                   xticklabels=['Different', 'Same'], yticklabels=['Different', 'Same'])
+        ax4.set_xlabel('Predicted')
+        ax4.set_ylabel('Actual')
+        ax4.set_title('Confusion Matrix')
+        
+        plt.tight_layout()
+        
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            print(f"Results saved to {save_path}")
+        
+        plt.show()
     
-    dataset = LFWDataset(
-        data_root=args.data_root,
-        pairs_file=args.pairs_file,
-    )
-    
-    dataloader = DataLoader(
-        dataset,
-        batch_size=args.batch_size,
-        shuffle=False,
-        num_workers=args.num_workers,
-        pin_memory=True
-    )
-    
-    load_time = timeit.default_timer() - start_time
-    print(f"Dataset loaded in {load_time:.2f}s")
-    
-    evaluator = LFWEvaluator(args.model_path)
-    
-    # Extract features
-    start_time = timeit.default_timer()
-    features1, features2, labels = evaluator.extract_features(dataloader)
-    extract_time = timeit.default_timer() - start_time
-    print(f"Feature extraction completed in {extract_time:.2f}s")
-    
-    # Evaluate
-    start_time = timeit.default_timer()
-    results, similarities, labels = evaluator.evaluate(features1, features2, labels)
-    eval_time = timeit.default_timer() - start_time
-    print(f"Evaluation completed in {eval_time:.2f}s")
-    
-    # Print results
-    evaluator.print_results(results)
-    
-    # Save results
-    if args.save_results:
-        save_data = {
-            'results': results,
+    def run_benchmark(self, save_results: bool = True) -> dict:
+        """
+        Run complete LFW benchmark evaluation.
+        
+        Args:
+            save_results: Whether to save results to files
+            
+        Returns:
+            Dictionary of evaluation results
+        """
+        print("=" * 60)
+        print("LVFace ONNX LFW Benchmark Evaluation")
+        print("=" * 60)
+        
+        # Load LFW pairs
+        pairs_data, labels = self.load_lfw_pairs()
+        
+        # Evaluate pairs
+        similarities, valid_labels, skipped_pairs = self.evaluate_pairs(pairs_data, labels)
+        
+        if len(similarities) == 0:
+            raise ValueError("No valid pairs found for evaluation!")
+        
+        # Compute metrics
+        metrics = self.compute_metrics(similarities, valid_labels)
+        
+        # Print results
+        print("\n" + "=" * 60)
+        print("EVALUATION RESULTS")
+        print("=" * 60)
+        print(f"Model Type: LVFace ONNX")
+        print(f"Total pairs processed: {len(similarities)}")
+        print(f"Pairs skipped: {skipped_pairs}")
+        print(f"ROC AUC: {metrics['roc_auc']:.4f}")
+        print(f"Best Accuracy: {metrics['accuracy']:.4f}")
+        print(f"Precision: {metrics['precision']:.4f}")
+        print(f"Recall: {metrics['recall']:.4f}")
+        print(f"F1-Score: {metrics['f1_score']:.4f}")
+        print(f"Optimal Threshold: {metrics['optimal_threshold']:.4f}")
+        print(f"True Positive Rate: {metrics['optimal_tpr']:.4f}")
+        print(f"False Positive Rate: {metrics['optimal_fpr']:.4f}")
+        
+        # Plot results
+        if save_results:
+            save_dir = Path('results')
+            save_dir.mkdir(exist_ok=True)
+            save_path = save_dir / 'lfw_onnx_evaluation_results.png'
+        else:
+            save_path = None
+            
+        self.plot_results(metrics, similarities, valid_labels, save_path)
+        
+        # Save detailed results
+        if save_results:
+            results_file = save_dir / 'lfw_onnx_benchmark_results.npz'
+            np.savez(results_file,
+                    similarities=similarities,
+                    labels=valid_labels,
+                    **{k: v for k, v in metrics.items() if isinstance(v, (int, float, np.ndarray))})
+            print(f"Detailed results saved to {results_file}")
+            
+            # Save summary to text file
+            summary_file = save_dir / 'lfw_onnx_summary.txt'
+            with open(summary_file, 'w') as f:
+                f.write("LVFace ONNX LFW Benchmark Results\n")
+                f.write("=" * 40 + "\n\n")
+                f.write(f"Total pairs processed: {len(similarities)}\n")
+                f.write(f"Pairs skipped: {skipped_pairs}\n")
+                f.write(f"ROC AUC: {metrics['roc_auc']:.4f}\n")
+                f.write(f"Best Accuracy: {metrics['accuracy']:.4f}\n")
+                f.write(f"Precision: {metrics['precision']:.4f}\n")
+                f.write(f"Recall: {metrics['recall']:.4f}\n")
+                f.write(f"F1-Score: {metrics['f1_score']:.4f}\n")
+                f.write(f"Optimal Threshold: {metrics['optimal_threshold']:.4f}\n")
+                f.write(f"True Positive Rate: {metrics['optimal_tpr']:.4f}\n")
+                f.write(f"False Positive Rate: {metrics['optimal_fpr']:.4f}\n")
+            print(f"Summary saved to {summary_file}")
+        
+        return {
             'similarities': similarities,
-            'labels': labels,
-            'features1': features1,
-            'features2': features2
+            'labels': valid_labels,
+            'metrics': metrics,
+            'skipped_pairs': skipped_pairs
         }
-        np.save(args.save_results, save_data)
-        print(f"Results saved to: {args.save_results}")
-    
-    print(f"\nTotal evaluation time: {load_time + extract_time + eval_time:.2f}s")
 
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='LFW Face Verification Evaluation')
-    
-    # Model arguments
-    parser.add_argument('--model-path', required=True, type=str,
-                        help='Path to ONNX model directory')
-    
-    # Data arguments
-    parser.add_argument('--data-root', default='./data/lfw/lfw-deepfunneled/lfw-deepfunneled', type=str,
-                        help='Path to LFW dataset root directory')
-    parser.add_argument('--pairs-file', default='./data/lfw/pairs.csv', type=str,
-                        help='Path to pairs CSV file')
-    
-    # Evaluation arguments
-    parser.add_argument('--batch-size', default=32, type=int,
-                        help='Batch size for feature extraction')
-    parser.add_argument('--num-workers', default=4, type=int,
-                        help='Number of data loading workers')
-    
-    # Output arguments
-    parser.add_argument('--save-results', type=str, default='./results/results.npy',
-                        help='Path to save detailed results (optional)')
+def main():
+    """Main function for running LFW benchmark."""
+    parser = argparse.ArgumentParser(description='LFW Benchmark for LVFace ONNX Model')
+    parser.add_argument('--model_path', type=str, 
+                       default='models/LVFace-L_Glint360K.onnx',
+                       help='Path to LVFace ONNX model file')
+    parser.add_argument('--lfw_data_path', type=str,
+                       default='data/lfw',
+                       help='Path to LFW dataset directory')
+    parser.add_argument('--no_gpu', action='store_true',
+                       help='Disable GPU acceleration')
+    parser.add_argument('--no_save', action='store_true',
+                       help='Do not save results to files')
     
     args = parser.parse_args()
     
     # Validate paths
-    if not os.path.exists(args.model_path):
-        raise ValueError(f"Model path does not exist: {args.model_path}")
-    if not os.path.exists(args.data_root):
-        raise ValueError(f"Data root does not exist: {args.data_root}")
-    if not os.path.exists(args.pairs_file):
-        raise ValueError(f"Pairs file does not exist: {args.pairs_file}")
+    model_path = Path(args.model_path)
+    if not model_path.exists():
+        raise FileNotFoundError(f"ONNX model file not found: {model_path}")
     
-    print("Starting LFW evaluation...")
-    print(f"Model path: {args.model_path}")
-    print(f"Data root: {args.data_root}")
-    print(f"Pairs file: {args.pairs_file}")
+    lfw_path = Path(args.lfw_data_path)
+    if not lfw_path.exists():
+        raise FileNotFoundError(f"LFW dataset not found: {lfw_path}")
     
-    main(args)
+    # Run benchmark
+    benchmark = LVFaceONNXLFWBenchmark(
+        model_path=str(model_path),
+        lfw_data_path=str(lfw_path),
+        use_gpu=not args.no_gpu
+    )
+    
+    results = benchmark.run_benchmark(save_results=not args.no_save)
+    
+    print("\nBenchmark completed successfully!")
+    print(f"Final ROC AUC: {results['metrics']['roc_auc']:.4f}")
+    print(f"Final Accuracy: {results['metrics']['accuracy']:.4f}")
+    
+    return results
+
+
+if __name__ == '__main__':
+    main()
