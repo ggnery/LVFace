@@ -1,13 +1,9 @@
-# Original code inspired by https://github.com/deepinsight/insightface
-# Modified for LFW dataset evaluation
 import argparse
 import os
 import sys
 import timeit
 import numpy as np
 import pandas as pd
-import cv2
-import torch
 from torch.utils.data import DataLoader, Dataset
 from sklearn.metrics import roc_curve, auc
 from sklearn.preprocessing import normalize
@@ -18,30 +14,19 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from onnx_helper import ArcFaceORT
 from inference_onnx import LVFaceONNXInferencer
 
-# Standard face alignment landmarks for 112x112 images
-SRC = np.array([
-    [30.2946, 51.6963],
-    [65.5318, 51.5014],
-    [48.0252, 71.7366],
-    [33.5493, 92.3655],
-    [62.7299, 92.2041]
-], dtype=np.float32)
-SRC[:, 0] += 8.0
 
 class LFWDataset(Dataset):
     """LFW Dataset for face verification evaluation"""
     
-    def __init__(self, data_root, pairs_file, align=True, image_size=(112, 112)):
+    def __init__(self, data_root, pairs_file, image_size=(112, 112)):
         """
         Args:
             data_root: Path to lfw-deepfunneled directory
             pairs_file: Path to pairs CSV file
-            align: Whether to apply face alignment (if landmarks available)
             image_size: Target image size for face recognition model
         """
         self.data_root = data_root
         self.image_size = image_size
-        self.align = align
         
         # Load pairs from CSV
         self.pairs_df = pd.read_csv(pairs_file)
@@ -80,53 +65,6 @@ class LFWDataset(Dataset):
                     self.pairs.append((img1_path, img2_path))
                     self.labels.append(1)  # Same person
         
-        # Add mismatched pairs if available
-        mismatch_files = [
-            'mismatchpairsDevTest.csv',
-            'mismatchpairsDevTrain.csv'
-        ]
-        
-        for mismatch_file in mismatch_files:
-            mismatch_path = os.path.join(os.path.dirname(pairs_file), mismatch_file)
-            if os.path.exists(mismatch_path):
-                mismatch_df = pd.read_csv(mismatch_path)
-                for _, row in mismatch_df.iterrows():
-                    # Format: name,imagenum1,name,imagenum2 (different persons)
-                    if len(row) == 4:
-                        name1 = row.iloc[0]
-                        img1_num = int(row.iloc[1])
-                        name2 = row.iloc[2]
-                        img2_num = int(row.iloc[3])
-                        
-                        img1_path = os.path.join(data_root, name1, f"{name1}_{img1_num:04d}.jpg")
-                        img2_path = os.path.join(data_root, name2, f"{name2}_{img2_num:04d}.jpg")
-                        
-                        if os.path.exists(img1_path) and os.path.exists(img2_path):
-                            self.pairs.append((img1_path, img2_path))
-                            self.labels.append(0)  # Different person
-            
-        # Add matched pairs if available
-        match_files = [
-            'matchpairsDevTest.csv',
-            'matchpairsDevTrain.csv'
-        ]    
-        
-        for match_file in match_files:
-            match_path = os.path.join(os.path.dirname(pairs_file), match_file)
-            if os.path.exists(match_path):
-                match_df = pd.read_csv(match_path)
-                # Format: name,imagenum1,imagenum2 (same person)
-                for _, row in match_df.iterrows():
-                    if len(row) == 3:
-                        name = row.iloc[0]
-                        img1_num = int(row.iloc[1])
-                        img2_num = int(row.iloc[2])
-                        img1_path = os.path.join(data_root, name, f"{name}_{img1_num:04d}.jpg")
-                        img2_path = os.path.join(data_root, name, f"{name}_{img2_num:04d}.jpg")
-                        
-                        if os.path.exists(img1_path) and os.path.exists(img2_path):
-                            self.pairs.append((img1_path, img2_path))
-                            self.labels.append(1)  # Same person
                        
         print(f"Loaded {len(self.pairs)} pairs ({sum(self.labels)} positive, {len(self.labels) - sum(self.labels)} negative)")
     
@@ -144,14 +82,12 @@ class LFWDataset(Dataset):
 class LFWEvaluator:
     """LFW Face Verification Evaluator"""
     
-    def __init__(self, model_path, use_flip=True):
+    def __init__(self, model_path):
         """
         Args:
             model_path: Path to ONNX model directory
-            use_flip: Whether to use flip test augmentation
         """
         self.model = LVFaceONNXInferencer(model_path, use_gpu=True)
-        self.use_flip = use_flip
         
         print(f"Model loaded: {model_path}")
     
@@ -259,7 +195,6 @@ def main(args):
     dataset = LFWDataset(
         data_root=args.data_root,
         pairs_file=args.pairs_file,
-        align=True
     )
     
     dataloader = DataLoader(
@@ -273,7 +208,7 @@ def main(args):
     load_time = timeit.default_timer() - start_time
     print(f"Dataset loaded in {load_time:.2f}s")
     
-    evaluator = LFWEvaluator(args.model_path, use_flip=args.use_flip)
+    evaluator = LFWEvaluator(args.model_path)
     
     # Extract features
     start_time = timeit.default_timer()
@@ -323,10 +258,6 @@ if __name__ == '__main__':
                         help='Batch size for feature extraction')
     parser.add_argument('--num-workers', default=4, type=int,
                         help='Number of data loading workers')
-    parser.add_argument('--use-flip', action='store_true', default=True,
-                        help='Use flip test augmentation')
-    parser.add_argument('--no-flip', dest='use_flip', action='store_false',
-                        help='Disable flip test augmentation')
     
     # Output arguments
     parser.add_argument('--save-results', type=str, default='./results/results.npy',
@@ -346,6 +277,5 @@ if __name__ == '__main__':
     print(f"Model path: {args.model_path}")
     print(f"Data root: {args.data_root}")
     print(f"Pairs file: {args.pairs_file}")
-    print(f"Use flip augmentation: {args.use_flip}")
     
     main(args)
