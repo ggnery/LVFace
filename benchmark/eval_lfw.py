@@ -14,6 +14,8 @@ import argparse
 from sklearn.metrics import roc_curve, auc, accuracy_score, confusion_matrix
 from tqdm import tqdm
 import warnings
+import csv
+import prettytable
 warnings.filterwarnings('ignore')
 
 import sys
@@ -203,6 +205,9 @@ class LVFaceONNXLFWBenchmark:
         recall = recall_score(labels, predictions)
         f1 = f1_score(labels, predictions)
         
+        # Compute TAR at specific FAR values (IJBC-style metrics)
+        tar_at_far = self.compute_tar_at_far(fpr, tpr)
+        
         metrics = {
             'roc_auc': roc_auc,
             'accuracy': accuracy,
@@ -214,10 +219,60 @@ class LVFaceONNXLFWBenchmark:
             'optimal_fpr': optimal_fpr,
             'fpr': fpr,
             'tpr': tpr,
-            'thresholds': thresholds
+            'thresholds': thresholds,
+            'tar_at_far': tar_at_far
         }
         
         return metrics
+    
+    def compute_tar_at_far(self, fpr: np.ndarray, tpr: np.ndarray, 
+                          far_values: list = [1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1]) -> dict:
+        """
+        Compute True Accept Rate (TAR) at specific False Accept Rate (FAR) values.
+        This follows the same methodology as IJBC benchmark.
+        
+        Args:
+            fpr: False Positive Rate array from ROC curve
+            tpr: True Positive Rate array from ROC curve
+            far_values: List of FAR values to evaluate at
+            
+        Returns:
+            Dictionary mapping FAR values to TAR values
+        """
+        tar_at_far = {}
+        
+        # Flip arrays to match IJBC implementation (descending order)
+        fpr_flipped = np.flipud(fpr)
+        tpr_flipped = np.flipud(tpr)
+        
+        for far in far_values:
+            # Find the closest FPR to the target FAR
+            abs_diff = np.abs(fpr_flipped - far)
+            min_index = np.argmin(abs_diff)
+            tar_at_far[far] = tpr_flipped[min_index]
+            
+        return tar_at_far
+    
+    def create_tar_far_table(self, tar_at_far: dict) -> prettytable.PrettyTable:
+        """
+        Create a formatted table showing TAR at different FAR values.
+        
+        Args:
+            tar_at_far: Dictionary mapping FAR values to TAR values
+            
+        Returns:
+            PrettyTable with TAR@FAR results
+        """
+        far_labels = [f'1e-{i}' for i in range(6, 0, -1)]  # [1e-6, 1e-5, ..., 1e-1]
+        table = prettytable.PrettyTable(['Method'] + far_labels)
+        
+        row = ['LVFace-LFW']
+        for far in [1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1]:
+            tar = tar_at_far.get(far, 0.0)
+            row.append(f'{tar * 100:.2f}')  # Convert to percentage
+            
+        table.add_row(row)
+        return table
     
     def plot_results(self, metrics: dict, similarities: np.ndarray, labels: np.ndarray, save_path: str = None):
         """
@@ -229,7 +284,7 @@ class LVFaceONNXLFWBenchmark:
             labels: Array of ground truth labels
             save_path: Path to save plots (optional)
         """
-        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 12))
+        fig, ((ax1, ax2, ax3), (ax4, ax5, ax6)) = plt.subplots(2, 3, figsize=(24, 12))
         
         # ROC Curve
         ax1.plot(metrics['fpr'], metrics['tpr'], 'b-', linewidth=2,
@@ -259,6 +314,29 @@ class LVFaceONNXLFWBenchmark:
         ax2.legend()
         ax2.grid(True, alpha=0.3)
         
+        # TAR@FAR Plot
+        far_values = [1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1]
+        tar_values = [metrics['tar_at_far'][far] * 100 for far in far_values]
+        far_labels = [f'1e-{i}' for i in range(6, 0, -1)]
+        
+        bars = ax3.bar(far_labels, tar_values, color='skyblue', alpha=0.7, edgecolor='navy')
+        ax3.set_xlabel('False Accept Rate (FAR)')
+        ax3.set_ylabel('True Accept Rate (TAR) %')
+        ax3.set_title('TAR at Different FAR Values')
+        ax3.grid(True, alpha=0.3)
+        ax3.set_ylim(0, 100)
+        
+        # Add value labels on top of bars
+        for bar, value in zip(bars, tar_values):
+            ax3.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 1, 
+                    f'{value:.1f}%', ha='center', va='bottom', fontweight='bold')
+        
+        # Special highlight for FAR=1e-4
+        far_1e4_idx = far_values.index(1e-4)
+        bars[far_1e4_idx].set_color('orange')
+        bars[far_1e4_idx].set_edgecolor('darkorange')
+        bars[far_1e4_idx].set_linewidth(2)
+        
         # Accuracy vs Threshold
         accuracies = []
         threshold_range = np.linspace(similarities.min(), similarities.max(), 100)
@@ -267,26 +345,47 @@ class LVFaceONNXLFWBenchmark:
             acc = accuracy_score(labels, preds)
             accuracies.append(acc)
         
-        ax3.plot(threshold_range, accuracies, 'g-', linewidth=2)
-        ax3.axvline(metrics['optimal_threshold'], color='red', linestyle='--', linewidth=2,
+        ax4.plot(threshold_range, accuracies, 'g-', linewidth=2)
+        ax4.axvline(metrics['optimal_threshold'], color='red', linestyle='--', linewidth=2,
                    label=f'Optimal Threshold')
-        ax3.axhline(metrics['accuracy'], color='red', linestyle='--', linewidth=2,
+        ax4.axhline(metrics['accuracy'], color='red', linestyle='--', linewidth=2,
                    label=f'Max Accuracy ({metrics["accuracy"]:.4f})')
-        ax3.set_xlabel('Threshold')
-        ax3.set_ylabel('Accuracy')
-        ax3.set_title('Accuracy vs Threshold')
-        ax3.legend()
-        ax3.grid(True, alpha=0.3)
+        ax4.set_xlabel('Threshold')
+        ax4.set_ylabel('Accuracy')
+        ax4.set_title('Accuracy vs Threshold')
+        ax4.legend()
+        ax4.grid(True, alpha=0.3)
         
         # Confusion Matrix
         predictions = (similarities >= metrics['optimal_threshold']).astype(int)
         cm = confusion_matrix(labels, predictions)
         
-        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', ax=ax4,
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', ax=ax5,
                    xticklabels=['Different', 'Same'], yticklabels=['Different', 'Same'])
-        ax4.set_xlabel('Predicted')
-        ax4.set_ylabel('Actual')
-        ax4.set_title('Confusion Matrix')
+        ax5.set_xlabel('Predicted')
+        ax5.set_ylabel('Actual')
+        ax5.set_title('Confusion Matrix')
+        
+        # ROC Curve (Log Scale for FPR)
+        ax6.semilogx(metrics['fpr'], metrics['tpr'], 'b-', linewidth=2,
+                    label=f'LVFace (AUC = {metrics["roc_auc"]:.4f})')
+        ax6.semilogx([1e-6, 1], [0, 1], 'r--', linewidth=1, label='Random Classifier')
+        
+        # Highlight specific FAR points
+        for far in far_values:
+            tar = metrics['tar_at_far'][far]
+            if far >= metrics['fpr'].min():  # Only plot if within range
+                ax6.plot(far, tar, 'ro', markersize=6)
+                ax6.annotate(f'FAR={far:.0e}\nTAR={tar:.3f}', 
+                           (far, tar), xytext=(5, 5), textcoords='offset points',
+                           fontsize=8, bbox=dict(boxstyle='round,pad=0.3', facecolor='yellow', alpha=0.7))
+        
+        ax6.set_xlabel('False Accept Rate (FAR) - Log Scale')
+        ax6.set_ylabel('True Accept Rate (TAR)')
+        ax6.set_title('ROC Curve - Log Scale FPR')
+        ax6.legend()
+        ax6.grid(True, alpha=0.3)
+        ax6.set_xlim(1e-6, 1)
         
         plt.tight_layout()
         
@@ -338,6 +437,19 @@ class LVFaceONNXLFWBenchmark:
         print(f"True Positive Rate: {metrics['optimal_tpr']:.4f}")
         print(f"False Positive Rate: {metrics['optimal_fpr']:.4f}")
         
+        # Print TAR@FAR table (IJBC-style metrics)
+        print("\n" + "=" * 60)
+        print("TAR @ FAR EVALUATION (IJBC-style)")
+        print("=" * 60)
+        tar_far_table = self.create_tar_far_table(metrics['tar_at_far'])
+        print(tar_far_table)
+        
+        # Highlight specific FAR values
+        print(f"\nKey Metrics:")
+        print(f"TAR @ FAR=1e-4: {metrics['tar_at_far'][1e-4]*100:.2f}%")
+        print(f"TAR @ FAR=1e-3: {metrics['tar_at_far'][1e-3]*100:.2f}%")
+        print(f"TAR @ FAR=1e-2: {metrics['tar_at_far'][1e-2]*100:.2f}%")
+        
         # Plot results
         if save_results:
             save_dir = Path('results')
@@ -357,6 +469,22 @@ class LVFaceONNXLFWBenchmark:
                     **{k: v for k, v in metrics.items() if isinstance(v, (int, float, np.ndarray))})
             print(f"Detailed results saved to {results_file}")
             
+            # Save TAR@FAR table to CSV (IJBC-style)
+            csv_file = save_dir / 'lfw_onnx_tar_far_results.csv'
+            tar_far_table = self.create_tar_far_table(metrics['tar_at_far'])
+            
+            with open(csv_file, 'w', newline='') as f:
+                writer = csv.writer(f)
+                # Write header
+                writer.writerow(['Method', '1e-6', '1e-5', '1e-4', '1e-3', '1e-2', '1e-1'])
+                # Write data row
+                row = ['LVFace-LFW']
+                for far in [1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1]:
+                    tar = metrics['tar_at_far'].get(far, 0.0)
+                    row.append(f'{tar * 100:.2f}')
+                writer.writerow(row)
+            print(f"TAR@FAR results saved to {csv_file}")
+            
             # Save summary to text file
             summary_file = save_dir / 'lfw_onnx_summary.txt'
             with open(summary_file, 'w') as f:
@@ -372,6 +500,11 @@ class LVFaceONNXLFWBenchmark:
                 f.write(f"Optimal Threshold: {metrics['optimal_threshold']:.4f}\n")
                 f.write(f"True Positive Rate: {metrics['optimal_tpr']:.4f}\n")
                 f.write(f"False Positive Rate: {metrics['optimal_fpr']:.4f}\n")
+                f.write("\nTAR @ FAR Results:\n")
+                f.write("=" * 30 + "\n")
+                for far in [1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1]:
+                    tar = metrics['tar_at_far'][far]
+                    f.write(f"TAR @ FAR={far:.0e}: {tar*100:.2f}%\n")
             print(f"Summary saved to {summary_file}")
         
         return {
@@ -419,6 +552,7 @@ def main():
     print("\nBenchmark completed successfully!")
     print(f"Final ROC AUC: {results['metrics']['roc_auc']:.4f}")
     print(f"Final Accuracy: {results['metrics']['accuracy']:.4f}")
+    print(f"TAR @ FAR=1e-4: {results['metrics']['tar_at_far'][1e-4]*100:.2f}%")
     
     return results
 
